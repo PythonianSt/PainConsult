@@ -102,8 +102,8 @@ def get_active_booking(df, email):
 
 st.set_page_config(page_title="Pain Consult Appointment", page_icon="🩺")
 
-st.title("🩺 นัดหมาย Pain Consult")
-st.subheader("สถานพยาบาล มหาวิทยาลัย")
+st.title("🩺 นัดหมาย Pain Consult KU KPS Infirmary")
+st.subheader("สถานพยาบาล มหาวิทยาลัยเกษตรศาสตร์ วิทยาเขตกำแพงแสน")
 
 st.info(
     """
