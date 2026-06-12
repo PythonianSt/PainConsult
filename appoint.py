@@ -168,7 +168,7 @@ with tab1:
 
 with tab2:
     st.write("### แก้ไขหรือยกเลิกนัดหมาย")
-    edit_email = st.text_input("ใส่อีเมล์ที่ใช้จอง", key="edit_email").strip().lower()
+    edit_email = st.text_input("ใส่อีเมล์ที่ใช้จอง", key="edit_email_input").strip().lower()
 
     if st.button("ค้นหานัดหมาย"):
         if not edit_email:
@@ -177,9 +177,10 @@ with tab2:
             idx = get_active_booking(df, edit_email)
             if idx is None:
                 st.warning("ไม่พบนัดหมายที่ยังใช้งานอยู่")
+                if "edit_idx" in st.session_state:
+                    del st.session_state["edit_idx"]
             else:
-                st.session_state["edit_idx"] = idx
-                st.session_state["edit_email"] = edit_email
+                st.session_state["edit_idx"] = int(idx)
 
     if "edit_idx" in st.session_state:
         idx = st.session_state["edit_idx"]
