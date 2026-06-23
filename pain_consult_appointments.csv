@@ -1,3 +1,4 @@
 created_at_bkk,updated_at_bkk,first_name,last_name,email,appointment_date,appointment_time,status,action_count
 2026-06-12 07:33:14,2026-06-12 07:41:29,กำธร,ตันติวิทยาทันต์,dr.kamthorn.tan@gmail.com,2026-06-16,07:00-08:30,rescheduled,2
 2026-06-23 09:33:00,2026-06-23 09:33:00,รวีวรรณ,พลอยพันธ์,raweewan.pl@ku.ac.th,2026-06-26,07:00-08:30,booked,1
+2026-06-23 09:35:12,2026-06-23 09:35:12,อรอุษา,ปุณยบุรณะ,ornusa.p@ku.th,2026-07-03,07:00-08:30,booked,1
