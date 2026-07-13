@@ -49,11 +49,11 @@ def empty_df():
 def github_session():
     session = requests.Session()
     retry = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
-        backoff_factor=0.8,
+        total=0,
+        connect=0,
+        read=0,
+        status=0,
+        backoff_factor=0,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=frozenset(["GET", "PUT"]),
         respect_retry_after_header=True,
@@ -73,7 +73,7 @@ def load_csv():
             API_URL,
             headers=HEADERS,
             params={"ref": BRANCH},
-            timeout=(10, 30),
+            timeout=(3, 8),
         )
 
         if r.status_code == 404:
@@ -99,7 +99,7 @@ def load_csv():
 
         return df[COLUMNS], data.get("sha"), None
 
-    except (requests.RequestException, ValueError, KeyError, UnicodeDecodeError) as exc:
+    except Exception as exc:
         return empty_df(), None, f"{type(exc).__name__}: {exc}"
 
 
@@ -109,14 +109,14 @@ def get_current_sha():
             API_URL,
             headers=HEADERS,
             params={"ref": BRANCH},
-            timeout=(10, 30),
+            timeout=(3, 8),
         )
         if r.status_code == 404:
             return None
         if r.status_code != 200:
             return None
         return r.json().get("sha")
-    except (requests.RequestException, ValueError):
+    except Exception:
         return None
 
 
@@ -138,7 +138,7 @@ def save_csv(df, sha=None):
             API_URL,
             headers=HEADERS,
             json=payload,
-            timeout=(10, 30),
+            timeout=(3, 8),
         )
 
         # Another user may have updated the CSV after this page loaded.
@@ -150,7 +150,7 @@ def save_csv(df, sha=None):
                     API_URL,
                     headers=HEADERS,
                     json=payload,
-                    timeout=(10, 30),
+                    timeout=(3, 8),
                 )
 
         if r.status_code not in (200, 201):
@@ -159,7 +159,7 @@ def save_csv(df, sha=None):
 
         return True, None
 
-    except requests.RequestException as exc:
+    except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 
 
@@ -388,4 +388,5 @@ with tab2:
                             st.error(GITHUB_ERROR_MSG)
                             with st.expander("รายละเอียดสำหรับผู้ดูแลระบบ"):
                                 st.code(save_error)
+
 
