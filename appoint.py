@@ -1,105 +1,372 @@
-
 import base64
+from datetime import datetime, timedelta
 from io import StringIO
+from zoneinfo import ZoneInfo
 
+import pandas as pd
+import requests
 import streamlit as st
 
-st.set_page_config(page_title="Pain Consult Diagnostic", page_icon="🩺")
-st.title("Pain Consult Diagnostic")
+BKK = ZoneInfo("Asia/Bangkok")
 
-st.success("Step 1: Streamlit ทำงานปกติ")
-st.write("Streamlit version:", st.__version__)
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+REPO = st.secrets["GITHUB_REPO"]
+BRANCH = st.secrets.get("GITHUB_BRANCH", "main")
+CSV_PATH = st.secrets.get("CSV_PATH", "pain_consult_appointments.csv")
 
-try:
-    import pandas as pd
-    st.success(f"Step 2: pandas import สำเร็จ — version {pd.__version__}")
-except Exception as exc:
-    st.error(f"Step 2 failed: {type(exc).__name__}: {exc}")
-    st.stop()
+API_URL = f"https://api.github.com/repos/{REPO}/contents/{CSV_PATH}"
 
-try:
-    import requests
-    st.success(f"Step 3: requests import สำเร็จ — version {requests.__version__}")
-except Exception as exc:
-    st.error(f"Step 3 failed: {type(exc).__name__}: {exc}")
-    st.stop()
-
-required = ["GITHUB_TOKEN", "GITHUB_REPO"]
-missing = [key for key in required if key not in st.secrets]
-
-if missing:
-    st.error("Step 4 failed: ขาด Secrets: " + ", ".join(missing))
-    st.stop()
-
-st.success("Step 4: พบ GitHub Secrets ที่จำเป็น")
-repo = st.secrets["GITHUB_REPO"]
-branch = st.secrets.get("GITHUB_BRANCH", "main")
-csv_path = st.secrets.get("CSV_PATH", "pain_consult_appointments.csv")
-token = st.secrets["GITHUB_TOKEN"]
-
-st.write("Repository:", repo)
-st.write("Branch:", branch)
-st.write("CSV path:", csv_path)
-
-api_url = f"https://api.github.com/repos/{repo}/contents/{csv_path}"
-headers = {
-    "Authorization": f"Bearer {token}",
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-st.info("ยังไม่มีการเชื่อม GitHub จนกว่าจะกดปุ่มด้านล่าง")
+COLUMNS = [
+    "created_at_bkk", "updated_at_bkk",
+    "first_name", "last_name", "email",
+    "appointment_date", "appointment_time",
+    "status", "action_count",
+]
 
-if st.button("ทดสอบเชื่อมต่อ GitHub"):
+CONTACT_MSG = "โปรดติดต่อสถานพยาบาล ในเวลาทำการ ที่หมายเลข 034351611"
+GITHUB_ERROR_MSG = (
+    "ระบบเชื่อมต่อฐานข้อมูล GitHub ไม่สำเร็จชั่วคราว "
+    "กรุณาลองใหม่อีกครั้งภายหลัง หรือโทรติดต่อสถานพยาบาลที่ 034351611"
+)
+
+
+def now_bkk():
+    return datetime.now(BKK).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def empty_df():
+    return pd.DataFrame(columns=COLUMNS)
+
+
+def load_csv():
+    """Return (dataframe, sha, error_message). Never crashes the whole app."""
     try:
-        with st.spinner("กำลังเชื่อมต่อ GitHub..."):
-            response = requests.get(
-                api_url,
-                headers=headers,
-                params={"ref": branch},
-                timeout=(3, 8),
+        r = requests.get(
+            API_URL,
+            headers=HEADERS,
+            params={"ref": BRANCH},
+            timeout=(3, 8),
+        )
+
+        if r.status_code == 404:
+            return empty_df(), None, None
+
+        if r.status_code != 200:
+            detail = r.text[:300] if r.text else "No response body"
+            return empty_df(), None, f"GitHub HTTP {r.status_code}: {detail}"
+
+        data = r.json()
+        raw_content = data.get("content", "")
+        if not raw_content:
+            return empty_df(), data.get("sha"), None
+
+        content = base64.b64decode(raw_content).decode("utf-8-sig")
+        if not content.strip():
+            return empty_df(), data.get("sha"), None
+
+        df = pd.read_csv(StringIO(content), dtype=str).fillna("")
+        for c in COLUMNS:
+            if c not in df.columns:
+                df[c] = ""
+
+        return df[COLUMNS], data.get("sha"), None
+
+    except Exception as exc:
+        return empty_df(), None, f"{type(exc).__name__}: {exc}"
+
+
+def get_current_sha():
+    try:
+        r = requests.get(
+            API_URL,
+            headers=HEADERS,
+            params={"ref": BRANCH},
+            timeout=(3, 8),
+        )
+        if r.status_code == 404:
+            return None
+        if r.status_code != 200:
+            return None
+        return r.json().get("sha")
+    except Exception:
+        return None
+
+
+def save_csv(df, sha=None):
+    """Save CSV and return (success, error_message)."""
+    csv_text = df.to_csv(index=False)
+    encoded = base64.b64encode(csv_text.encode("utf-8")).decode("utf-8")
+
+    payload = {
+        "message": f"update pain consult appointments {now_bkk()}",
+        "content": encoded,
+        "branch": BRANCH,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    try:
+        r = requests.put(
+            API_URL,
+            headers=HEADERS,
+            json=payload,
+            timeout=(3, 8),
+        )
+
+        # Another user may have updated the CSV after this page loaded.
+        if r.status_code in (409, 422):
+            latest_sha = get_current_sha()
+            if latest_sha:
+                payload["sha"] = latest_sha
+                r = requests.put(
+                    API_URL,
+                    headers=HEADERS,
+                    json=payload,
+                    timeout=(3, 8),
+                )
+
+        if r.status_code not in (200, 201):
+            detail = r.text[:300] if r.text else "No response body"
+            return False, f"GitHub HTTP {r.status_code}: {detail}"
+
+        return True, None
+
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def working_days_next_month():
+    today = datetime.now(BKK).date()
+    return [
+        today + timedelta(days=i)
+        for i in range(1, 32)
+        if (today + timedelta(days=i)).weekday() < 5
+    ]
+
+
+def is_slot_taken(df, appt_date, exclude_email=None):
+    active = df[df["status"].isin(["booked", "rescheduled"])]
+    active = active[active["appointment_date"] == appt_date.isoformat()]
+    if exclude_email:
+        active = active[active["email"].str.lower() != exclude_email.lower()]
+    return not active.empty
+
+
+def email_action_count(df, email):
+    rows = df[df["email"].str.lower() == email.lower()]
+    if rows.empty:
+        return 0
+    values = pd.to_numeric(rows["action_count"], errors="coerce").fillna(0)
+    return int(values.max())
+
+
+def get_active_booking(df, email):
+    rows = df[
+        (df["email"].str.lower() == email.lower())
+        & (df["status"].isin(["booked", "rescheduled"]))
+    ]
+    if rows.empty:
+        return None
+    return rows.tail(1).index[0]
+
+
+st.set_page_config(page_title="Pain Consult Appointment", page_icon="🩺")
+
+st.title("🩺 นัดหมาย Pain Consult KU KPS Infirmary")
+st.subheader("สถานพยาบาล มหาวิทยาลัยเกษตรศาสตร์ วิทยาเขตกำแพงแสน")
+
+st.info(
+    """
+**วัตถุประสงค์ของ Pain Consult**  
+ดูแลบำบัดความปวดจากการเล่นกีฬา ปวดศีรษะ ปวดประจำเดือน และปวดเรื้อรัง  
+ในช่วงเวลาก่อนเริ่มเรียน/งาน เวลา **07.00-08.30 น.**
+"""
+)
+
+df, sha, load_error = load_csv()
+database_ready = load_error is None
+
+if not database_ready:
+    st.error(GITHUB_ERROR_MSG)
+    with st.expander("รายละเอียดสำหรับผู้ดูแลระบบ"):
+        st.code(load_error)
+    if st.button("ลองเชื่อมต่อใหม่"):
+        st.rerun()
+
+# Keep the page visible, but prohibit booking against an unknown/empty dataset.
+tab1, tab2 = st.tabs(["นัดหมายใหม่", "แก้ไข / ยกเลิกนัดหมาย"])
+
+with tab1:
+    st.write("### กรอกข้อมูลเพื่อนัดหมาย")
+
+    first = st.text_input("ชื่อ", disabled=not database_ready)
+    last = st.text_input("นามสกุล", disabled=not database_ready)
+    email = st.text_input("อีเมล์", disabled=not database_ready).strip().lower()
+
+    available_days = []
+    if database_ready:
+        available_days = [
+            d for d in working_days_next_month()
+            if not is_slot_taken(df, d)
+        ]
+
+    if not database_ready:
+        st.warning("ปิดการนัดหมายชั่วคราว เพื่อป้องกันการจองซ้ำขณะอ่านฐานข้อมูลไม่ได้")
+    elif not available_days:
+        st.warning("ขณะนี้ไม่มีวันว่างใน 1 เดือนข้างหน้า")
+    else:
+        chosen_date = st.selectbox(
+            "เลือกวันนัดหมาย",
+            available_days,
+            format_func=lambda d: d.strftime("%d/%m/%Y"),
+        )
+
+        st.write("เวลา: **07.00-08.30 น.**")
+
+        if st.button("ยืนยันนัดหมาย", disabled=not database_ready):
+            if not first or not last or not email:
+                st.error("กรุณากรอกชื่อ นามสกุล และอีเมล์ให้ครบ")
+            elif "@" not in email or "." not in email.split("@")[-1]:
+                st.error("กรุณาตรวจสอบรูปแบบอีเมล์")
+            elif email_action_count(df, email) >= 2:
+                st.error(CONTACT_MSG)
+            elif get_active_booking(df, email) is not None:
+                st.error("อีเมล์นี้มีนัดหมายอยู่แล้ว กรุณาไปที่เมนูแก้ไข / ยกเลิกนัดหมาย")
+            elif is_slot_taken(df, chosen_date):
+                st.error("วันดังกล่าวมีผู้จองแล้ว กรุณาเลือกวันอื่น")
+            else:
+                count = email_action_count(df, email) + 1
+                new_row = {
+                    "created_at_bkk": now_bkk(),
+                    "updated_at_bkk": now_bkk(),
+                    "first_name": first.strip(),
+                    "last_name": last.strip(),
+                    "email": email,
+                    "appointment_date": chosen_date.isoformat(),
+                    "appointment_time": "07:00-08:30",
+                    "status": "booked",
+                    "action_count": str(count),
+                }
+                updated_df = pd.concat(
+                    [df, pd.DataFrame([new_row])], ignore_index=True
+                )
+                success, save_error = save_csv(updated_df, sha)
+                if success:
+                    st.success(
+                        f"นัดหมายสำเร็จ วันที่ {chosen_date.strftime('%d/%m/%Y')} "
+                        "เวลา 07.00-08.30 น."
+                    )
+                    st.balloons()
+                else:
+                    st.error(GITHUB_ERROR_MSG)
+                    with st.expander("รายละเอียดสำหรับผู้ดูแลระบบ"):
+                        st.code(save_error)
+
+with tab2:
+    st.write("### แก้ไขหรือยกเลิกนัดหมาย")
+    edit_email = st.text_input(
+        "ใส่อีเมล์ที่ใช้จอง",
+        key="edit_email_input",
+        disabled=not database_ready,
+    ).strip().lower()
+
+    if st.button("ค้นหานัดหมาย", disabled=not database_ready):
+        if not edit_email:
+            st.error("กรุณาใส่อีเมล์")
+        else:
+            idx = get_active_booking(df, edit_email)
+            if idx is None:
+                st.warning("ไม่พบนัดหมายที่ยังใช้งานอยู่")
+                st.session_state.pop("edit_idx", None)
+            else:
+                st.session_state["edit_idx"] = int(idx)
+
+    if database_ready and "edit_idx" in st.session_state:
+        idx = st.session_state["edit_idx"]
+
+        if idx not in df.index:
+            st.session_state.pop("edit_idx", None)
+            st.warning("ข้อมูลนัดหมายมีการเปลี่ยนแปลง กรุณาค้นหาใหม่")
+        else:
+            row = df.loc[idx]
+            try:
+                appt_date = datetime.strptime(
+                    row["appointment_date"], "%Y-%m-%d"
+                ).date()
+                action_count = int(float(row.get("action_count", 0) or 0))
+            except (TypeError, ValueError):
+                st.error("ข้อมูลนัดหมายรายการนี้ไม่สมบูรณ์ กรุณาติดต่อสถานพยาบาล")
+                st.stop()
+
+            today = datetime.now(BKK).date()
+            st.write(
+                f"นัดหมายปัจจุบัน: **{appt_date.strftime('%d/%m/%Y')} "
+                "เวลา 07.00-08.30 น.**"
             )
 
-        st.write("HTTP status:", response.status_code)
-
-        if response.status_code == 404:
-            st.warning("Step 5: ไม่พบไฟล์ CSV แต่ GitHub API ตอบสนองปกติ")
-        elif response.status_code != 200:
-            st.error(f"Step 5 failed: GitHub HTTP {response.status_code}")
-            st.code(response.text[:1000] or "No response body")
-        else:
-            st.success("Step 5: GitHub API เชื่อมต่อสำเร็จ")
-            data = response.json()
-
-            encoded = data.get("content", "")
-            sha = data.get("sha", "")
-
-            st.write("SHA available:", bool(sha))
-            st.write("Encoded content available:", bool(encoded))
-
-            if encoded:
-                decoded = base64.b64decode(encoded).decode("utf-8-sig")
-                st.write("CSV text length:", len(decoded))
-
-                try:
-                    df = pd.read_csv(StringIO(decoded), dtype=str).fillna("")
-                    st.success(
-                        f"Step 6: อ่าน CSV สำเร็จ — {len(df)} rows, "
-                        f"{len(df.columns)} columns"
-                    )
-                    st.dataframe(df.head(5), use_container_width=True)
-                except Exception as exc:
-                    st.error(
-                        f"Step 6 failed: {type(exc).__name__}: {exc}"
-                    )
+            if appt_date <= today:
+                st.error("ไม่สามารถแก้ไขหรือยกเลิกได้ในวันนัดหมายหรือหลังวันนัดหมายแล้ว")
+            elif action_count >= 2:
+                st.error(CONTACT_MSG)
             else:
-                st.warning("Step 6: ไฟล์ไม่มี content")
-    except requests.Timeout:
-        st.error("Step 5 failed: GitHub request timeout")
-    except requests.RequestException as exc:
-        st.error(f"Step 5 failed: {type(exc).__name__}: {exc}")
-    except Exception as exc:
-        st.error(f"Unexpected error: {type(exc).__name__}: {exc}")
+                choice = st.radio(
+                    "เลือกการดำเนินการ", ["เปลี่ยนวันนัด", "ยกเลิกนัด"]
+                )
+
+                if choice == "เปลี่ยนวันนัด":
+                    new_days = [
+                        d for d in working_days_next_month()
+                        if not is_slot_taken(df, d, exclude_email=row["email"])
+                    ]
+
+                    if not new_days:
+                        st.warning("ขณะนี้ไม่มีวันอื่นว่างใน 1 เดือนข้างหน้า")
+                    else:
+                        new_date = st.selectbox(
+                            "เลือกวันนัดใหม่",
+                            new_days,
+                            format_func=lambda d: d.strftime("%d/%m/%Y"),
+                        )
+
+                        if st.button("ยืนยันเปลี่ยนวันนัด"):
+                            updated_df = df.copy()
+                            updated_df.at[idx, "appointment_date"] = new_date.isoformat()
+                            updated_df.at[idx, "status"] = "rescheduled"
+                            updated_df.at[idx, "updated_at_bkk"] = now_bkk()
+                            updated_df.at[idx, "action_count"] = str(action_count + 1)
+                            success, save_error = save_csv(updated_df, sha)
+                            if success:
+                                st.success(
+                                    f"เปลี่ยนนัดสำเร็จ เป็นวันที่ "
+                                    f"{new_date.strftime('%d/%m/%Y')} เวลา 07.00-08.30 น."
+                                )
+                                st.session_state.pop("edit_idx", None)
+                            else:
+                                st.error(GITHUB_ERROR_MSG)
+                                with st.expander("รายละเอียดสำหรับผู้ดูแลระบบ"):
+                                    st.code(save_error)
+
+                elif choice == "ยกเลิกนัด":
+                    if st.button("ยืนยันยกเลิกนัดหมาย"):
+                        updated_df = df.copy()
+                        updated_df.at[idx, "status"] = "cancelled"
+                        updated_df.at[idx, "updated_at_bkk"] = now_bkk()
+                        updated_df.at[idx, "action_count"] = str(action_count + 1)
+                        success, save_error = save_csv(updated_df, sha)
+                        if success:
+                            st.success("ยกเลิกนัดหมายสำเร็จ")
+                            st.session_state.pop("edit_idx", None)
+                        else:
+                            st.error(GITHUB_ERROR_MSG)
+                            with st.expander("รายละเอียดสำหรับผู้ดูแลระบบ"):
+                                st.code(save_error)
+
 
 
 
